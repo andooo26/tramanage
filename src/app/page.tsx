@@ -63,7 +63,12 @@ export default function Home() {
         <div className="w-full max-w-3xl">
           <pre className="bg-zinc-900 rounded-xl p-6 overflow-x-auto border border-zinc-800 text-sm leading-6">
             <span className="text-blue-400">{result.root}/</span>{"\n"}
-            {result.lines.join("\n")}
+            {result.lines.map((line, i) => {
+              const isNonMp3File = !line.endsWith("/") && !/\.(mp3|jpg|jpeg)$/i.test(line);
+              return (
+                <span key={i} className={isNonMp3File ? "text-yellow-400" : ""}>{line}{"\n"}</span>
+              );
+            })}
           </pre>
           <div className="mt-4 text-right text-zinc-400 text-sm font-mono">
             合計ファイル数: <span className="text-zinc-100 font-semibold">{result.count}</span>
