@@ -43,7 +43,8 @@ async function buildTree(dir: FileSystemDirectoryHandle, dirPath = "") {
 
 // 除外拡張子
 function TreeItem({ node, depth = 0 }: { node: TreeNode; depth?: number }) {
-  const [open, setOpen] = useState(true);
+  // 1階層目まで標準で展開しておく
+  const [open, setOpen] = useState(depth < 1);
   const isOther = node.kind === "file" && !/\.(mp3|jpg|jpeg|png)$/i.test(node.name);
 
   return (
@@ -73,7 +74,8 @@ function TreeItem({ node, depth = 0 }: { node: TreeNode; depth?: number }) {
 
 // ツリー表示のコンポーネント
 function RootTree({ root, nodes }: { root: string; nodes: TreeNode[] }) {
-  const [open, setOpen] = useState(true);
+  // 読込時はツリーを閉じる
+  const [open, setOpen] = useState(false);
   return (
     <div className="bg-zinc-900 rounded-xl border border-zinc-700">
       <div
@@ -105,7 +107,7 @@ export default function Home() {
   } | null>(null);
   const [loading, setLoading] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const [otherOpen, setOtherOpen] = useState(true);
+  const [otherOpen, setOtherOpen] = useState(false);
 
   async function selectFolder() {
     try {
