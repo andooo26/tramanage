@@ -20,6 +20,7 @@ async function buildTree(dir: FileSystemDirectoryHandle, dirPath = "") {
   const nodes: TreeNode[] = [];
   const filePaths: string[] = [];
   const dsStoreEntries: DsStoreEntry[] = [];
+  const hiddenEntries: DsStoreEntry[] = [];
   let count = 0;
 
   for (const [name, handle] of entries) {
@@ -29,16 +30,18 @@ async function buildTree(dir: FileSystemDirectoryHandle, dirPath = "") {
       nodes.push({ name, kind: "directory", path, children: sub.nodes });
       filePaths.push(...sub.filePaths);
       dsStoreEntries.push(...sub.dsStoreEntries);
+      hiddenEntries.push(...sub.hiddenEntries);
       count += sub.count;
     } else {
       nodes.push({ name, kind: "file", path, children: [] });
       filePaths.push(path);
       count++;
       if (name === ".DS_Store") dsStoreEntries.push({ parent: dir, name });
+      else if (name.startsWith(".")) hiddenEntries.push({ parent: dir, name });
     }
   }
 
-  return { nodes, filePaths, dsStoreEntries, count };
+  return { nodes, filePaths, dsStoreEntries, hiddenEntries, count };
 }
 
 // 除外拡張子
@@ -96,6 +99,32 @@ function RootTree({ root, nodes }: { root: string; nodes: TreeNode[] }) {
   );
 }
 
+// 差分リストのコンポーネント
+function DiffList({ label, paths, color }: { label: string; paths: string[]; color: "green" | "red" }) {
+  const [open, setOpen] = useState(false);
+  const styles = {
+    green: { border: "border-green-700", text: "text-green-400", arrow: "text-green-500" },
+    red:   { border: "border-red-700",   text: "text-red-400",   arrow: "text-red-500"   },
+  }[color];
+
+  return (
+    <div className={`bg-zinc-900 rounded-xl border ${styles.border}`}>
+      <div
+        className="flex items-center gap-2 p-6 pb-3 cursor-pointer select-none"
+        onClick={() => setOpen((o) => !o)}
+      >
+        <span className={styles.arrow}>{open ? "▾" : "▸"}</span>
+        <span className={`${styles.text} font-semibold text-sm`}>{label} ({paths.length}件)</span>
+      </div>
+      {open && (
+        <ul className={`font-mono text-sm ${styles.text} space-y-1 px-6 pb-6`}>
+          {paths.map((p, i) => <li key={i}>{p}</li>)}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 export default function Home() {
   const [rootDir, setRootDir] = useState<FileSystemDirectoryHandle | null>(null);
   const [result, setResult] = useState<{
@@ -103,23 +132,55 @@ export default function Home() {
     nodes: TreeNode[];
     filePaths: string[];
     dsStoreEntries: DsStoreEntry[];
+    hiddenEntries: DsStoreEntry[];
     count: number;
   } | null>(null);
   const [loading, setLoading] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [deletingHidden, setDeletingHidden] = useState(false);
   const [otherOpen, setOtherOpen] = useState(false);
 
+  const [diffResult, setDiffResult] = useState<{
+    rootA: string;
+    rootB: string;
+    onlyA: string[];
+    onlyB: string[];
+    common: number;
+  } | null>(null);
+  const [diffLoading, setDiffLoading] = useState(false);
+
   async function selectFolder() {
+    setDiffResult(null);
     try {
       const dir = await (window as any).showDirectoryPicker();
       setRootDir(dir);
       setLoading(true);
-      const { nodes, filePaths, dsStoreEntries, count } = await buildTree(dir);
-      setResult({ root: dir.name, nodes, filePaths, dsStoreEntries, count });
+      const { nodes, filePaths, dsStoreEntries, hiddenEntries, count } = await buildTree(dir);
+      setResult({ root: dir.name, nodes, filePaths, dsStoreEntries, hiddenEntries, count });
     } catch (e: any) {
       if (e?.name !== "AbortError") console.error(e);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function selectAndDiff() {
+    setResult(null);
+    try {
+      const dirA = await (window as any).showDirectoryPicker();
+      const dirB = await (window as any).showDirectoryPicker();
+      setDiffLoading(true);
+      const [resA, resB] = await Promise.all([buildTree(dirA), buildTree(dirB)]);
+      const setB = new Set(resB.filePaths);
+      const setA = new Set(resA.filePaths);
+      const onlyA = resA.filePaths.filter((p) => !setB.has(p));
+      const onlyB = resB.filePaths.filter((p) => !setA.has(p));
+      const common = resA.filePaths.filter((p) => setB.has(p)).length;
+      setDiffResult({ rootA: dirA.name, rootB: dirB.name, onlyA, onlyB, common });
+    } catch (e: any) {
+      if (e?.name !== "AbortError") console.error(e);
+    } finally {
+      setDiffLoading(false);
     }
   }
 
@@ -128,8 +189,8 @@ export default function Home() {
     setDeleting(true);
     try {
       await Promise.all(result.dsStoreEntries.map(({ parent, name }) => parent.removeEntry(name)));
-      const { nodes, filePaths, dsStoreEntries, count } = await buildTree(rootDir);
-      setResult({ root: rootDir.name, nodes, filePaths, dsStoreEntries, count });
+      const { nodes, filePaths, dsStoreEntries, hiddenEntries, count } = await buildTree(rootDir);
+      setResult({ root: rootDir.name, nodes, filePaths, dsStoreEntries, hiddenEntries, count });
     } catch (e) {
       console.error(e);
     } finally {
@@ -141,13 +202,22 @@ export default function Home() {
     <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col items-center py-16 px-6">
       <h1 className="text-3xl font-bold mb-8 tracking-widest">tramanage</h1>
 
-      <button
-        onClick={selectFolder}
-        disabled={loading}
-        className="mb-10 px-6 py-3 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-medium transition-colors"
-      >
-        {loading ? "Loading" : "フォルダを選択"}
-      </button>
+      <div className="flex gap-4 mb-10">
+        <button
+          onClick={selectFolder}
+          disabled={loading || diffLoading}
+          className="px-6 py-3 rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 text-white font-medium transition-colors"
+        >
+          {loading ? "Loading..." : "フォルダを選択"}
+        </button>
+        <button
+          onClick={selectAndDiff}
+          disabled={loading || diffLoading}
+          className="px-6 py-3 rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 text-white font-medium transition-colors"
+        >
+          {diffLoading ? "比較中..." : "差分を比較"}
+        </button>
+      </div>
 
       {result && !loading && (() => {
         const otherFiles = result.filePaths.filter((p) => !/\.(mp3|jpg|jpeg|png)$/i.test(p));
@@ -174,26 +244,44 @@ export default function Home() {
                 )}
               </div>
             )}
-            {result.dsStoreEntries.length > 0 && (
-              <div className="bg-zinc-900 rounded-xl p-6 border border-red-700">
-                <div className="flex items-center justify-between">
-                  <div className="text-red-400 font-semibold text-sm">.DS_Store ({result.dsStoreEntries.length}件)</div>
-                  <button
-                    onClick={deleteDsStores}
-                    disabled={deleting}
-                    className="px-4 py-1.5 rounded-lg bg-red-700 hover:bg-red-600 disabled:opacity-50 text-white text-sm font-medium transition-colors"
-                  >
-                    {deleting ? "削除中..." : "一括削除"}
-                  </button>
-                </div>
+            <div className="bg-zinc-900 rounded-xl p-6 border border-red-700">
+              <div className="flex items-center justify-between">
+                <div className="text-red-400 font-semibold text-sm">.DS_Store ({result.dsStoreEntries.length}件)</div>
+                <button
+                  onClick={deleteDsStores}
+                  disabled={deleting || result.dsStoreEntries.length === 0}
+                  className="px-4 py-1.5 rounded-lg bg-red-700 hover:bg-red-600 disabled:opacity-50 text-white text-sm font-medium transition-colors"
+                >
+                  {deleting ? "削除中..." : "一括削除"}
+                </button>
               </div>
-            )}
+            </div>
             <div className="text-right text-zinc-400 text-sm font-mono">
               合計ファイル数: <span className="text-zinc-100 font-semibold">{result.count}</span>
             </div>
           </div>
         );
       })()}
+
+      {diffResult && !diffLoading && (
+        <div className="w-full max-w-3xl space-y-6">
+          <div className="bg-zinc-900 rounded-xl p-6 border border-zinc-700 font-mono text-sm text-zinc-400">
+            <span className="text-green-400">{diffResult.rootA}/</span>
+            <span className="mx-2">と</span>
+            <span className="text-red-400">{diffResult.rootB}/</span>
+            <span className="ml-4">共通: <span className="text-zinc-100 font-semibold">{diffResult.common}</span>件</span>
+          </div>
+          {diffResult.onlyA.length > 0 && (
+            <DiffList label={`${diffResult.rootA} にのみ存在`} paths={diffResult.onlyA} color="green" />
+          )}
+          {diffResult.onlyB.length > 0 && (
+            <DiffList label={`${diffResult.rootB} にのみ存在`} paths={diffResult.onlyB} color="red" />
+          )}
+          {diffResult.onlyA.length === 0 && diffResult.onlyB.length === 0 && (
+            <div className="text-center text-zinc-400 text-sm">差分はありません</div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
