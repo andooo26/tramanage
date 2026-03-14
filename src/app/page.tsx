@@ -134,6 +134,7 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [deletingHidden, setDeletingHidden] = useState(false);
   const [otherOpen, setOtherOpen] = useState(false);
+  const [hiddenOpen, setHiddenOpen] = useState(false);
 
   const [diffResult, setDiffResult] = useState<{
     rootA: string;
@@ -241,9 +242,15 @@ export default function Home() {
                 )}
               </div>
             )}
-            <div className="bg-zinc-900 rounded-xl p-6 border border-red-700">
-              <div className="flex items-center justify-between">
-                <div className="text-red-400 font-semibold text-sm">隠しファイル ({result.hiddenEntries.length}件)</div>
+            <div className="bg-zinc-900 rounded-xl border border-red-700">
+              <div className="flex items-center justify-between p-6 pb-3">
+                <div
+                  className="flex items-center gap-2 cursor-pointer select-none"
+                  onClick={() => setHiddenOpen((o) => !o)}
+                >
+                  <span className="text-red-500">{hiddenOpen ? "▾" : "▸"}</span>
+                  <span className="text-red-400 font-semibold text-sm">隠しファイル ({result.hiddenEntries.length}件)</span>
+                </div>
                 <button
                   onClick={deleteHiddenFiles}
                   disabled={deletingHidden || result.hiddenEntries.length === 0}
@@ -252,6 +259,13 @@ export default function Home() {
                   {deletingHidden ? "削除中..." : "一括削除"}
                 </button>
               </div>
+              {hiddenOpen && (
+                <ul className="font-mono text-sm text-red-400 space-y-1 px-6 pb-6">
+                  {result.hiddenEntries.map((entry, i) => (
+                    <li key={i}>{entry.name}</li>
+                  ))}
+                </ul>
+              )}
             </div>
             <div className="text-right text-zinc-400 text-sm font-mono">
               合計ファイル数: <span className="text-zinc-100 font-semibold">{result.count}</span>
