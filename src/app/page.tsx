@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 
-type DsStoreEntry = { parent: FileSystemDirectoryHandle; name: string };
+type HiddenEntry = { parent: FileSystemDirectoryHandle; name: string };
 
 type TreeNode = {
   name: string;
@@ -19,8 +19,7 @@ async function buildTree(dir: FileSystemDirectoryHandle, dirPath = "") {
 
   const nodes: TreeNode[] = [];
   const filePaths: string[] = [];
-  const dsStoreEntries: DsStoreEntry[] = [];
-  const hiddenEntries: DsStoreEntry[] = [];
+  const hiddenEntries: HiddenEntry[] = [];
   let count = 0;
 
   for (const [name, handle] of entries) {
@@ -29,19 +28,17 @@ async function buildTree(dir: FileSystemDirectoryHandle, dirPath = "") {
       const sub = await buildTree(handle as FileSystemDirectoryHandle, path);
       nodes.push({ name, kind: "directory", path, children: sub.nodes });
       filePaths.push(...sub.filePaths);
-      dsStoreEntries.push(...sub.dsStoreEntries);
       hiddenEntries.push(...sub.hiddenEntries);
       count += sub.count;
     } else {
       nodes.push({ name, kind: "file", path, children: [] });
       filePaths.push(path);
       count++;
-      if (name === ".DS_Store") dsStoreEntries.push({ parent: dir, name });
-      else if (name.startsWith(".")) hiddenEntries.push({ parent: dir, name });
+      if (name.startsWith(".")) hiddenEntries.push({ parent: dir, name });
     }
   }
 
-  return { nodes, filePaths, dsStoreEntries, hiddenEntries, count };
+  return { nodes, filePaths, hiddenEntries, count };
 }
 
 // 除外拡張子
@@ -131,12 +128,10 @@ export default function Home() {
     root: string;
     nodes: TreeNode[];
     filePaths: string[];
-    dsStoreEntries: DsStoreEntry[];
-    hiddenEntries: DsStoreEntry[];
+    hiddenEntries: HiddenEntry[];
     count: number;
   } | null>(null);
   const [loading, setLoading] = useState(false);
-  const [deleting, setDeleting] = useState(false);
   const [deletingHidden, setDeletingHidden] = useState(false);
   const [otherOpen, setOtherOpen] = useState(false);
 
@@ -155,8 +150,8 @@ export default function Home() {
       const dir = await (window as any).showDirectoryPicker();
       setRootDir(dir);
       setLoading(true);
-      const { nodes, filePaths, dsStoreEntries, hiddenEntries, count } = await buildTree(dir);
-      setResult({ root: dir.name, nodes, filePaths, dsStoreEntries, hiddenEntries, count });
+      const { nodes, filePaths, hiddenEntries, count } = await buildTree(dir);
+      setResult({ root: dir.name, nodes, filePaths, hiddenEntries, count });
     } catch (e: any) {
       if (e?.name !== "AbortError") console.error(e);
     } finally {
@@ -164,6 +159,22 @@ export default function Home() {
     }
   }
 
+  // 隠しファイルを削除する関数
+  async function deleteHiddenFiles() {
+    if (!rootDir || !result) return;
+    setDeletingHidden(true);
+    try {
+      await Promise.all(result.hiddenEntries.map(({ parent, name }) => parent.removeEntry(name)));
+      const { nodes, filePaths, hiddenEntries, count } = await buildTree(rootDir);
+      setResult({ root: rootDir.name, nodes, filePaths, hiddenEntries, count });
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setDeletingHidden(false);
+    }
+  }
+
+  // 2つのディレクトリを比較する関数
   async function selectAndDiff() {
     setResult(null);
     try {
@@ -181,20 +192,6 @@ export default function Home() {
       if (e?.name !== "AbortError") console.error(e);
     } finally {
       setDiffLoading(false);
-    }
-  }
-
-  async function deleteDsStores() {
-    if (!rootDir || !result) return;
-    setDeleting(true);
-    try {
-      await Promise.all(result.dsStoreEntries.map(({ parent, name }) => parent.removeEntry(name)));
-      const { nodes, filePaths, dsStoreEntries, hiddenEntries, count } = await buildTree(rootDir);
-      setResult({ root: rootDir.name, nodes, filePaths, dsStoreEntries, hiddenEntries, count });
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setDeleting(false);
     }
   }
 
@@ -246,13 +243,13 @@ export default function Home() {
             )}
             <div className="bg-zinc-900 rounded-xl p-6 border border-red-700">
               <div className="flex items-center justify-between">
-                <div className="text-red-400 font-semibold text-sm">.DS_Store ({result.dsStoreEntries.length}件)</div>
+                <div className="text-red-400 font-semibold text-sm">隠しファイル ({result.hiddenEntries.length}件)</div>
                 <button
-                  onClick={deleteDsStores}
-                  disabled={deleting || result.dsStoreEntries.length === 0}
+                  onClick={deleteHiddenFiles}
+                  disabled={deletingHidden || result.hiddenEntries.length === 0}
                   className="px-4 py-1.5 rounded-lg bg-red-700 hover:bg-red-600 disabled:opacity-50 text-white text-sm font-medium transition-colors"
                 >
-                  {deleting ? "削除中..." : "一括削除"}
+                  {deletingHidden ? "削除中..." : "一括削除"}
                 </button>
               </div>
             </div>
