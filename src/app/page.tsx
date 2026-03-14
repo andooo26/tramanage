@@ -11,6 +11,7 @@ type TreeNode = {
   children: TreeNode[];
 };
 
+// 選択ディレクトリのツリー構造を構築
 async function buildTree(dir: FileSystemDirectoryHandle, dirPath = "") {
   const entries: [string, FileSystemHandle][] = [];
   for await (const entry of dir) entries.push(entry);
@@ -40,9 +41,10 @@ async function buildTree(dir: FileSystemDirectoryHandle, dirPath = "") {
   return { nodes, filePaths, dsStoreEntries, count };
 }
 
+// 除外拡張子
 function TreeItem({ node, depth = 0 }: { node: TreeNode; depth?: number }) {
   const [open, setOpen] = useState(true);
-  const isOther = node.kind === "file" && !/\.(mp3|jpg|jpeg)$/i.test(node.name);
+  const isOther = node.kind === "file" && !/\.(mp3|jpg|jpeg|png)$/i.test(node.name);
 
   return (
     <div>
@@ -69,6 +71,7 @@ function TreeItem({ node, depth = 0 }: { node: TreeNode; depth?: number }) {
   );
 }
 
+// ツリー表示のコンポーネント
 function RootTree({ root, nodes }: { root: string; nodes: TreeNode[] }) {
   const [open, setOpen] = useState(true);
   return (
@@ -145,7 +148,7 @@ export default function Home() {
       </button>
 
       {result && !loading && (() => {
-        const otherFiles = result.filePaths.filter((p) => !/\.(mp3|jpg|jpeg)$/i.test(p));
+        const otherFiles = result.filePaths.filter((p) => !/\.(mp3|jpg|jpeg|png)$/i.test(p));
         return (
           <div className="w-full max-w-3xl space-y-6">
             <RootTree root={result.root} nodes={result.nodes} />
@@ -157,7 +160,7 @@ export default function Home() {
                 >
                   <span className="text-yellow-500">{otherOpen ? "▾" : "▸"}</span>
                   <span className="text-yellow-400 font-semibold text-sm">
-                    MP3・JPG以外のファイル ({otherFiles.length}件)
+                    MP3・JPG・PNG以外のファイル ({otherFiles.length}件)
                   </span>
                 </div>
                 {otherOpen && (
