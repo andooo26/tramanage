@@ -2,7 +2,7 @@
 
 import Header from "@/components/Header";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 type HiddenEntry = { parent: FileSystemDirectoryHandle; name: string };
 
@@ -16,7 +16,7 @@ type TreeNode = {
 // 選択ディレクトリのツリー構造を構築
 async function buildTree(dir: FileSystemDirectoryHandle, dirPath = "") {
   const entries: [string, FileSystemHandle][] = [];
-  for await (const entry of dir) entries.push(entry);
+  for await (const entry of dir as any) entries.push(entry);
   entries.sort(([a], [b]) => a.localeCompare(b));
 
   const nodes: TreeNode[] = [];
@@ -124,6 +124,51 @@ function DiffList({ label, paths, color }: { label: string; paths: string[]; col
   );
 }
 
+// 変換対象
+const AUDIO_FORMATS = /\.(flac|wav|aiff|aif|wma|ogg|m4a|opus|aac|alac|ape|dsf|dff)$/i;
+
+type AudioFileEntry = {
+  relPath: string;
+  fileHandle: FileSystemFileHandle;
+};
+
+async function collectAudioFiles(
+  dir: FileSystemDirectoryHandle,
+  relPath = ""
+): Promise<AudioFileEntry[]> {
+  const results: AudioFileEntry[] = [];
+  for await (const [name, handle] of dir as any) {
+    const path = relPath ? `${relPath}/${name}` : name;
+    if (handle.kind === "directory") {
+      if (name === "converted") continue;
+      const sub = await collectAudioFiles(handle as FileSystemDirectoryHandle, path);
+      results.push(...sub);
+    } else if (AUDIO_FORMATS.test(name)) {
+      results.push({ relPath: path, fileHandle: handle as FileSystemFileHandle });
+    }
+  }
+  return results;
+}
+
+async function getOrCreateDir(
+  root: FileSystemDirectoryHandle,
+  pathParts: string[]
+): Promise<FileSystemDirectoryHandle> {
+  let current = root;
+  for (const part of pathParts) {
+    current = await current.getDirectoryHandle(part, { create: true });
+  }
+  return current;
+}
+
+type ConvertState = {
+  status: "loading-ffmpeg" | "scanning" | "converting" | "done" | "error";
+  current: number;
+  total: number;
+  currentFile: string;
+  errors: string[];
+};
+
 export default function Home() {
   const [rootDir, setRootDir] = useState<FileSystemDirectoryHandle | null>(null);
   const [result, setResult] = useState<{
@@ -146,6 +191,9 @@ export default function Home() {
     common: number;
   } | null>(null);
   const [diffLoading, setDiffLoading] = useState(false);
+
+  const [convertState, setConvertState] = useState<ConvertState | null>(null);
+  const ffmpegRef = useRef<import("@ffmpeg/ffmpeg").FFmpeg | null>(null);
 
   async function selectFolder() {
     setDiffResult(null);
@@ -198,26 +246,146 @@ export default function Home() {
     }
   }
 
+  // 変換を実行する関数
+  async function convertAudio() {
+    setResult(null);
+    setDiffResult(null);
+    try {
+      const dir = await (window as any).showDirectoryPicker();
+
+      if (!ffmpegRef.current) {
+        setConvertState({ status: "loading-ffmpeg", current: 0, total: 0, currentFile: "", errors: [] });
+        const { FFmpeg } = await import("@ffmpeg/ffmpeg");
+        const { toBlobURL } = await import("@ffmpeg/util");
+        const ffmpeg = new FFmpeg();
+        await ffmpeg.load({
+          coreURL: await toBlobURL("/ffmpeg/ffmpeg-core.js", "text/javascript"),
+          wasmURL: await toBlobURL("/ffmpeg/ffmpeg-core.wasm", "application/wasm"),
+        });
+        ffmpegRef.current = ffmpeg;
+      }
+
+      setConvertState({ status: "scanning", current: 0, total: 0, currentFile: "", errors: [] });
+      const audioFiles = await collectAudioFiles(dir);
+
+      if (audioFiles.length === 0) {
+        setConvertState({ status: "done", current: 0, total: 0, currentFile: "", errors: ["変換対象の音源ファイルが見つかりませんでした"] });
+        return;
+      }
+
+      const ffmpeg = ffmpegRef.current!;
+      const errors: string[] = [];
+
+      for (let i = 0; i < audioFiles.length; i++) {
+        const { relPath, fileHandle } = audioFiles[i];
+        setConvertState({ status: "converting", current: i + 1, total: audioFiles.length, currentFile: relPath, errors: [...errors] });
+
+        try {
+          const file = await fileHandle.getFile();
+          const inputData = new Uint8Array(await file.arrayBuffer());
+          const ext = relPath.substring(relPath.lastIndexOf("."));
+          const inputName = `input${ext}`;
+          const outputName = relPath.substring(relPath.lastIndexOf("/") + 1).replace(/\.[^.]+$/, "") + ".mp3";
+
+          await ffmpeg.writeFile(inputName, inputData);
+          await ffmpeg.exec(["-i", inputName, "-b:a", "320k", "-map_metadata", "0", outputName]);
+          const outputData = await ffmpeg.readFile(outputName) as Uint8Array;
+          await ffmpeg.deleteFile(inputName);
+          await ffmpeg.deleteFile(outputName);
+
+          // converted/ + 元の相対パスでディレクトリを作成
+          const relDir = relPath.includes("/") ? relPath.substring(0, relPath.lastIndexOf("/")) : "";
+          const pathParts = relDir ? ["converted", ...relDir.split("/")] : ["converted"];
+          const outDir = await getOrCreateDir(dir, pathParts);
+
+          const outHandle = await outDir.getFileHandle(outputName, { create: true });
+          const writable = await outHandle.createWritable();
+          await writable.write(outputData as unknown as ArrayBuffer);
+          await writable.close();
+        } catch (err) {
+          console.error(`Failed to convert ${relPath}:`, err);
+          errors.push(relPath);
+        }
+      }
+
+      setConvertState({ status: "done", current: audioFiles.length, total: audioFiles.length, currentFile: "", errors });
+    } catch (e: any) {
+      if (e?.name === "AbortError") {
+        setConvertState(null);
+      } else {
+        console.error(e);
+        setConvertState((prev) => prev ? { ...prev, status: "error" } : null);
+      }
+    }
+  }
+
+  const isConverting = convertState !== null && convertState.status !== "done" && convertState.status !== "error";
+
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col items-center pt-24 pb-16 px-6">
       <Header />
 
-      <div className="flex gap-4 mb-10">
+      <div className="flex gap-4 mb-10 flex-wrap justify-center">
         <button
           onClick={selectFolder}
-          disabled={loading || diffLoading}
+          disabled={loading || diffLoading || isConverting}
           className="px-6 py-3 rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 text-white font-medium transition-colors"
         >
           {loading ? "Loading..." : "フォルダを選択"}
         </button>
         <button
           onClick={selectAndDiff}
-          disabled={loading || diffLoading}
+          disabled={loading || diffLoading || isConverting}
           className="px-6 py-3 rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 text-white font-medium transition-colors"
         >
           {diffLoading ? "比較中..." : "差分を比較"}
         </button>
+        <button
+          onClick={convertAudio}
+          disabled={loading || diffLoading || isConverting}
+          className="px-6 py-3 rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 text-white font-medium transition-colors"
+        >
+          {isConverting ? "変換中..." : "音源を変換"}
+        </button>
       </div>
+
+      {convertState && (
+        <div className="w-full max-w-3xl mb-8">
+          <div className="bg-zinc-900 rounded-xl border border-indigo-700 p-6 space-y-3">
+            <div className="flex items-center gap-2">
+              <span className="text-indigo-400 font-semibold text-sm">
+                {convertState.status === "loading-ffmpeg" && "ffmpeg を読み込み中..."}
+                {convertState.status === "scanning" && "ファイルをスキャン中..."}
+                {convertState.status === "converting" && `変換中 (${convertState.current} / ${convertState.total})`}
+                {convertState.status === "done" && `完了 — ${convertState.total} ファイル変換`}
+                {convertState.status === "error" && "エラーが発生しました"}
+              </span>
+            </div>
+            {convertState.status === "converting" && (
+              <>
+                <div className="w-full bg-zinc-800 rounded-full h-2">
+                  <div
+                    className="bg-indigo-500 h-2 rounded-full transition-all"
+                    style={{ width: `${(convertState.current / convertState.total) * 100}%` }}
+                  />
+                </div>
+                <p className="font-mono text-xs text-zinc-400 truncate">{convertState.currentFile}</p>
+              </>
+            )}
+            {convertState.status === "done" && convertState.errors.length > 0 && (
+              <div>
+                <p className="text-red-400 text-sm font-semibold mb-1">失敗したファイル ({convertState.errors.length}件)</p>
+                <ul className="font-mono text-xs text-red-400 space-y-0.5 max-h-40 overflow-y-auto">
+                  {convertState.errors.map((e, i) => <li key={i}>{e}</li>)}
+                </ul>
+              </div>
+            )}
+            {convertState.status === "done" && convertState.errors.length === 0 && convertState.total > 0 && (
+              <p className="text-green-400 text-sm">すべてのファイルを converted/ に保存しました</p>
+            )}
+          </div>
+        </div>
+      )}
 
       {result && !loading && (() => {
         const otherFiles = result.filePaths.filter((p) => !/\.(mp3|jpg|jpeg|png)$/i.test(p));
