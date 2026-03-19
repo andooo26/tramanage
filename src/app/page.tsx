@@ -1,5 +1,7 @@
 "use client";
 
+import Header from "@/components/Header";
+
 import { useState } from "react";
 
 type HiddenEntry = { parent: FileSystemDirectoryHandle; name: string };
@@ -197,8 +199,8 @@ export default function Home() {
   }
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col items-center py-16 px-6">
-      <h1 className="text-3xl font-bold mb-8 tracking-widest">tramanage</h1>
+    <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col items-center pt-24 pb-16 px-6">
+      <Header />
 
       <div className="flex gap-4 mb-10">
         <button
