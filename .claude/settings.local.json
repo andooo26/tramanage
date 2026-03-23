@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find D:DocumentsProjectsWebtramanage/src -name *Diff* -o -name *diff*)"
+    ]
+  }
+}

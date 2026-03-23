@@ -23,11 +23,12 @@ export function useDiffViewer() {
       const dirB = await (window as any).showDirectoryPicker();
       setLoading(true);
       const [resA, resB] = await Promise.all([buildTree(dirA), buildTree(dirB)]);
-      const setB = new Set(resB.filePaths);
-      const setA = new Set(resA.filePaths);
-      const onlyA = resA.filePaths.filter((p) => !setB.has(p));
-      const onlyB = resB.filePaths.filter((p) => !setA.has(p));
-      const common = resA.filePaths.filter((p) => setB.has(p)).length;
+      const isImage = (p: string) => /\.(jpe?g|png)$/i.test(p);
+      const setB = new Set(resB.filePaths.filter((p) => !isImage(p)));
+      const setA = new Set(resA.filePaths.filter((p) => !isImage(p)));
+      const onlyA = [...setA].filter((p) => !setB.has(p));
+      const onlyB = [...setB].filter((p) => !setA.has(p));
+      const common = [...setA].filter((p) => setB.has(p)).length;
       setResult({ rootA: dirA.name, rootB: dirB.name, onlyA, onlyB, common });
     } catch (e: any) {
       if (e?.name !== "AbortError") console.error(e);
