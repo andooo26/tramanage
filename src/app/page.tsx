@@ -71,7 +71,12 @@ export default function Home() {
       )}
 
       {diffViewer.result && !diffViewer.loading && (
-        <DiffView result={diffViewer.result} />
+        <DiffView
+          result={diffViewer.result}
+          copying={diffViewer.copying}
+          onCopyAToB={diffViewer.copyOnlyAToB}
+          onCopyBToA={diffViewer.copyOnlyBToA}
+        />
       )}
     </div>
   );
