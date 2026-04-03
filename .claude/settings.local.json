@@ -1,7 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "Bash(find D:DocumentsProjectsWebtramanage/src -name *Diff* -o -name *diff*)"
+      "Bash(find D:DocumentsProjectsWebtramanage/src -name *Diff* -o -name *diff*)",
+      "Bash(npm install:*)",
+      "Bash(npm run:*)",
+      "Bash(grep -r package.json D:DocumentsProjectsWebtramanagenode_modulesmusic-metadatalib --include=*.js -l)",
+      "Bash(npm uninstall:*)"
     ]
   }
 }

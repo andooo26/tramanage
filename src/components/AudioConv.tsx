@@ -51,12 +51,13 @@ export function useAudioConverter() {
           const ext = relPath.substring(relPath.lastIndexOf("."));
           const inputName = `input${ext}`;
           const outputName = relPath.substring(relPath.lastIndexOf("/") + 1).replace(/\.[^.]+$/, "") + ".mp3";
+          const tmpOutputName = "output.mp3";
 
           await ffmpeg.writeFile(inputName, inputData);
-          await ffmpeg.exec(["-i", inputName, "-b:a", "320k", "-map_metadata", "0", outputName]);
-          const outputData = await ffmpeg.readFile(outputName) as Uint8Array;
+          await ffmpeg.exec(["-i", inputName, "-b:a", "320k", "-map_metadata", "0", tmpOutputName]);
+          const outputData = await ffmpeg.readFile(tmpOutputName) as Uint8Array;
           await ffmpeg.deleteFile(inputName);
-          await ffmpeg.deleteFile(outputName);
+          await ffmpeg.deleteFile(tmpOutputName);
 
           const relDir = relPath.includes("/") ? relPath.substring(0, relPath.lastIndexOf("/")) : "";
           const pathParts = relDir ? ["converted", ...relDir.split("/")] : ["converted"];

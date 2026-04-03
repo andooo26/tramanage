@@ -4,30 +4,46 @@ import Header from "@/components/Header";
 import DirectoryView, { useFolderViewer } from "@/components/DirectoryView";
 import DiffView, { useDiffViewer } from "@/components/DiffView";
 import AudioConv, { useAudioConverter } from "@/components/AudioConv";
+import MetadataEdit, { useMetadataEditor } from "@/components/MetadataEdit";
 
 export default function Home() {
   const folderViewer = useFolderViewer();
   const diffViewer = useDiffViewer();
   const audioConverter = useAudioConverter();
+  const metadataEditor = useMetadataEditor();
 
-  const busy = folderViewer.loading || diffViewer.loading || audioConverter.isConverting;
+  const busy =
+    folderViewer.loading ||
+    diffViewer.loading ||
+    audioConverter.isConverting ||
+    metadataEditor.isBusy;
 
   function handleSelectFolder() {
     diffViewer.clear();
     audioConverter.clear();
+    metadataEditor.clear();
     folderViewer.selectFolder();
   }
 
   function handleSelectAndDiff() {
     folderViewer.clear();
     audioConverter.clear();
+    metadataEditor.clear();
     diffViewer.selectAndDiff();
   }
 
   function handleConvertAudio() {
     folderViewer.clear();
     diffViewer.clear();
+    metadataEditor.clear();
     audioConverter.convertAudio();
+  }
+
+  function handleEditMetadata() {
+    folderViewer.clear();
+    diffViewer.clear();
+    audioConverter.clear();
+    metadataEditor.selectAndLoad();
   }
 
   return (
@@ -56,6 +72,13 @@ export default function Home() {
         >
           {audioConverter.isConverting ? "Loading..." : "音源を変換"}
         </button>
+        <button
+          onClick={handleEditMetadata}
+          disabled={busy}
+          className="px-6 py-3 rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 text-white font-medium transition-colors"
+        >
+          {metadataEditor.loading ? "Loading..." : "メタデータ編集"}
+        </button>
       </div>
 
       {audioConverter.convertState && (
@@ -76,6 +99,16 @@ export default function Home() {
           copying={diffViewer.copying}
           onCopyAToB={diffViewer.copyOnlyAToB}
           onCopyBToA={diffViewer.copyOnlyBToA}
+        />
+      )}
+
+      {metadataEditor.editorState && (
+        <MetadataEdit
+          editorState={metadataEditor.editorState}
+          selectedIndex={metadataEditor.selectedIndex}
+          onSelect={metadataEditor.setSelectedIndex}
+          onSave={metadataEditor.saveTrack}
+          onUpdateMetadata={metadataEditor.updateMetadata}
         />
       )}
     </div>
