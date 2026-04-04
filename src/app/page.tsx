@@ -97,6 +97,8 @@ export default function Home() {
         <DiffView
           result={diffViewer.result}
           copying={diffViewer.copying}
+          copyProgress={diffViewer.copyProgress}
+          copyDirection={diffViewer.copyDirection}
           onCopyAToB={diffViewer.copyOnlyAToB}
           onCopyBToA={diffViewer.copyOnlyBToA}
         />

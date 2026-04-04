@@ -18,9 +18,12 @@ export type DiffResult = {
 async function copyFiles(
   paths: string[],
   srcDir: FileSystemDirectoryHandle,
-  destDir: FileSystemDirectoryHandle
+  destDir: FileSystemDirectoryHandle,
+  onProgress?: (done: number, total: number, current: string) => void
 ) {
-  for (const relPath of paths) {
+  const total = paths.length;
+  for (let i = 0; i < total; i++) {
+    const relPath = paths[i];
     const parts = relPath.split("/");
     const fileName = parts[parts.length - 1];
     const dirParts = parts.slice(0, -1);
@@ -43,6 +46,8 @@ async function copyFiles(
     const writable = await (destFile as any).createWritable();
     await writable.write(file);
     await writable.close();
+
+    onProgress?.(i + 1, total, relPath);
   }
 }
 
@@ -64,6 +69,8 @@ export function useDiffViewer() {
   const [result, setResult] = useState<DiffResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [copying, setCopying] = useState(false);
+  const [copyProgress, setCopyProgress] = useState<{ done: number; total: number; current: string } | null>(null);
+  const [copyDirection, setCopyDirection] = useState<"AtoB" | "BtoA" | null>(null);
 
   async function selectAndDiff() {
     try {
@@ -81,14 +88,20 @@ export function useDiffViewer() {
   async function copyOnlyAToB() {
     if (!result) return;
     setCopying(true);
+    setCopyDirection("AtoB");
+    setCopyProgress({ done: 0, total: result.onlyA.length, current: "" });
     try {
-      await copyFiles(result.onlyA, result.dirA, result.dirB);
+      await copyFiles(result.onlyA, result.dirA, result.dirB, (done, total, current) =>
+        setCopyProgress({ done, total, current })
+      );
       setLoading(true);
       setResult(await runDiff(result.dirA, result.dirB));
     } catch (e) {
       console.error(e);
     } finally {
       setCopying(false);
+      setCopyDirection(null);
+      setCopyProgress(null);
       setLoading(false);
     }
   }
@@ -96,14 +109,20 @@ export function useDiffViewer() {
   async function copyOnlyBToA() {
     if (!result) return;
     setCopying(true);
+    setCopyDirection("BtoA");
+    setCopyProgress({ done: 0, total: result.onlyB.length, current: "" });
     try {
-      await copyFiles(result.onlyB, result.dirB, result.dirA);
+      await copyFiles(result.onlyB, result.dirB, result.dirA, (done, total, current) =>
+        setCopyProgress({ done, total, current })
+      );
       setLoading(true);
       setResult(await runDiff(result.dirA, result.dirB));
     } catch (e) {
       console.error(e);
     } finally {
       setCopying(false);
+      setCopyDirection(null);
+      setCopyProgress(null);
       setLoading(false);
     }
   }
@@ -112,7 +131,7 @@ export function useDiffViewer() {
     setResult(null);
   }
 
-  return { loading, copying, result, selectAndDiff, copyOnlyAToB, copyOnlyBToA, clear };
+  return { loading, copying, copyProgress, copyDirection, result, selectAndDiff, copyOnlyAToB, copyOnlyBToA, clear };
 }
 
 // ---- components ----
@@ -124,6 +143,7 @@ function DiffList({
   copyLabel,
   onCopy,
   copying,
+  copyProgress,
 }: {
   label: string;
   paths: string[];
@@ -131,12 +151,17 @@ function DiffList({
   copyLabel: string;
   onCopy: () => void;
   copying: boolean;
+  copyProgress: { done: number; total: number; current: string } | null;
 }) {
   const [open, setOpen] = useState(false);
   const styles = {
-    green: { border: "border-green-700", text: "text-green-400", arrow: "text-green-500" },
-    red:   { border: "border-red-700",   text: "text-red-400",   arrow: "text-red-500"   },
+    green: { border: "border-green-700", text: "text-green-400", arrow: "text-green-500", bar: "bg-green-500" },
+    red:   { border: "border-red-700",   text: "text-red-400",   arrow: "text-red-500",   bar: "bg-red-500"   },
   }[color];
+
+  const pct = copyProgress && copyProgress.total > 0
+    ? Math.round((copyProgress.done / copyProgress.total) * 100)
+    : 0;
 
   return (
     <div className={`bg-zinc-900 rounded-xl border ${styles.border}`}>
@@ -156,6 +181,20 @@ function DiffList({
           {copying ? "コピー中…" : copyLabel}
         </button>
       </div>
+      {copying && copyProgress && (
+        <div className="px-6 pb-3 space-y-1">
+          <div className="w-full h-2 bg-zinc-700 rounded-full overflow-hidden">
+            <div
+              className={`h-full ${styles.bar} transition-all duration-150`}
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+          <div className="flex items-center justify-between text-xs text-zinc-400">
+            <span className="font-mono truncate max-w-[70%]">{copyProgress.current}</span>
+            <span>{copyProgress.done} / {copyProgress.total} ({pct}%)</span>
+          </div>
+        </div>
+      )}
       {open && (
         <ul className={`font-mono text-sm ${styles.text} space-y-1 px-6 pb-6`}>
           {paths.map((p, i) => <li key={i}>{p}</li>)}
@@ -168,11 +207,13 @@ function DiffList({
 type Props = {
   result: DiffResult;
   copying: boolean;
+  copyProgress: { done: number; total: number; current: string } | null;
+  copyDirection: "AtoB" | "BtoA" | null;
   onCopyAToB: () => void;
   onCopyBToA: () => void;
 };
 
-export default function DiffView({ result, copying, onCopyAToB, onCopyBToA }: Props) {
+export default function DiffView({ result, copying, copyProgress, copyDirection, onCopyAToB, onCopyBToA }: Props) {
   const labelA = `${result.rootA} (dir1)`;
   const labelB = `${result.rootB} (dir2)`;
 
@@ -191,7 +232,8 @@ export default function DiffView({ result, copying, onCopyAToB, onCopyBToA }: Pr
           color="green"
           copyLabel={`→ ${labelB} にコピー`}
           onCopy={onCopyAToB}
-          copying={copying}
+          copying={copying && copyDirection === "AtoB"}
+          copyProgress={copyDirection === "AtoB" ? copyProgress : null}
         />
       )}
       {result.onlyB.length > 0 && (
@@ -201,7 +243,8 @@ export default function DiffView({ result, copying, onCopyAToB, onCopyBToA }: Pr
           color="red"
           copyLabel={`→ ${labelA} にコピー`}
           onCopy={onCopyBToA}
-          copying={copying}
+          copying={copying && copyDirection === "BtoA"}
+          copyProgress={copyDirection === "BtoA" ? copyProgress : null}
         />
       )}
       {result.onlyA.length === 0 && result.onlyB.length === 0 && (
