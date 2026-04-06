@@ -111,6 +111,7 @@ export default function Home() {
           onSelect={metadataEditor.setSelectedIndex}
           onSave={metadataEditor.saveTrack}
           onUpdateMetadata={metadataEditor.updateMetadata}
+          onUpdateFileName={metadataEditor.updateFileName}
         />
       )}
     </div>

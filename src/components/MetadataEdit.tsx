@@ -17,6 +17,7 @@ type AudioTrack = {
   relPath: string;
   fileHandle: FileSystemFileHandle;
   metadata: TrackMetadata;
+  newFileName: string;
   saveStatus: "idle" | "saving" | "saved" | "error";
 };
 
@@ -72,6 +73,7 @@ export function useMetadataEditor() {
   const [selectedIndex, setSelectedIndex] = useState<number>(0);
   const [loading, setLoading] = useState(false);
   const ffmpegRef = useRef<import("@ffmpeg/ffmpeg").FFmpeg | null>(null);
+  const dirHandleRef = useRef<FileSystemDirectoryHandle | null>(null);
 
   const isBusy =
     loading ||
@@ -126,6 +128,7 @@ export function useMetadataEditor() {
       const dir = await (window as any).showDirectoryPicker({ mode: "readwrite" });
 
       const ffmpeg = await loadFfmpeg();
+      dirHandleRef.current = dir;
       const entries = await collectAllAudio(dir);
 
       const tracks: AudioTrack[] = [];
@@ -133,7 +136,8 @@ export function useMetadataEditor() {
         const { relPath, fileHandle } = entries[i];
         setEditorState({ status: "reading", done: i, total: entries.length });
         const metadata = await readMetadata(ffmpeg, fileHandle, relPath);
-        tracks.push({ relPath, fileHandle, metadata, saveStatus: "idle" });
+        const fileName = relPath.includes("/") ? relPath.substring(relPath.lastIndexOf("/") + 1) : relPath;
+        tracks.push({ relPath, fileHandle, metadata, newFileName: fileName, saveStatus: "idle" });
       }
 
       setEditorState({ status: "ready", tracks });
@@ -180,15 +184,46 @@ export function useMetadataEditor() {
       await ffmpeg.deleteFile(inputName);
       await ffmpeg.deleteFile(outputName);
 
-      const writable = await track.fileHandle.createWritable();
-      await writable.write(outputData as unknown as ArrayBuffer);
-      await writable.close();
+      const currentFileName = track.relPath.includes("/")
+        ? track.relPath.substring(track.relPath.lastIndexOf("/") + 1)
+        : track.relPath;
+      const isRenamed = track.newFileName.trim() !== "" && track.newFileName.trim() !== currentFileName;
 
-      setEditorState((prev) =>
-        prev?.status === "ready"
-          ? { ...prev, tracks: prev.tracks.map((t, i) => i === index ? { ...t, saveStatus: "saved" } : t) }
-          : prev
-      );
+      if (isRenamed && dirHandleRef.current) {
+        // Navigate to parent directory
+        const dirParts = track.relPath.includes("/")
+          ? track.relPath.substring(0, track.relPath.lastIndexOf("/")).split("/")
+          : [];
+        let parentDir: FileSystemDirectoryHandle = dirHandleRef.current;
+        for (const part of dirParts) {
+          parentDir = await parentDir.getDirectoryHandle(part);
+        }
+        // Write new file
+        const newHandle = await parentDir.getFileHandle(track.newFileName.trim(), { create: true });
+        const writable = await newHandle.createWritable();
+        await writable.write(outputData as unknown as ArrayBuffer);
+        await writable.close();
+        // Delete old file
+        await parentDir.removeEntry(currentFileName);
+        // Update relPath and fileHandle in state
+        const newRelPath = dirParts.length > 0
+          ? `${dirParts.join("/")}/${track.newFileName.trim()}`
+          : track.newFileName.trim();
+        setEditorState((prev) =>
+          prev?.status === "ready"
+            ? { ...prev, tracks: prev.tracks.map((t, i) => i === index ? { ...t, relPath: newRelPath, fileHandle: newHandle, saveStatus: "saved" } : t) }
+            : prev
+        );
+      } else {
+        const writable = await track.fileHandle.createWritable();
+        await writable.write(outputData as unknown as ArrayBuffer);
+        await writable.close();
+        setEditorState((prev) =>
+          prev?.status === "ready"
+            ? { ...prev, tracks: prev.tracks.map((t, i) => i === index ? { ...t, saveStatus: "saved" } : t) }
+            : prev
+        );
+      }
     } catch (err) {
       console.error("Failed to save metadata:", err);
       setEditorState((prev) =>
@@ -197,6 +232,19 @@ export function useMetadataEditor() {
           : prev
       );
     }
+  }
+
+  function updateFileName(index: number, value: string) {
+    setEditorState((prev) =>
+      prev?.status === "ready"
+        ? {
+            ...prev,
+            tracks: prev.tracks.map((t, i) =>
+              i === index ? { ...t, newFileName: value, saveStatus: "idle" } : t
+            ),
+          }
+        : prev
+    );
   }
 
   function updateMetadata(index: number, field: keyof TrackMetadata, value: string) {
@@ -227,6 +275,7 @@ export function useMetadataEditor() {
     selectAndLoad,
     saveTrack,
     updateMetadata,
+    updateFileName,
     clear,
   };
 }
@@ -248,6 +297,7 @@ type Props = {
   onSelect: (i: number) => void;
   onSave: (i: number) => void;
   onUpdateMetadata: (i: number, field: keyof TrackMetadata, value: string) => void;
+  onUpdateFileName: (i: number, value: string) => void;
 };
 
 export default function MetadataEdit({
@@ -256,6 +306,7 @@ export default function MetadataEdit({
   onSelect,
   onSave,
   onUpdateMetadata,
+  onUpdateFileName,
 }: Props) {
   if (editorState.status === "loading-ffmpeg") {
     return (
@@ -345,7 +396,16 @@ export default function MetadataEdit({
         {/* Edit panel */}
         {selected && (
           <div className="flex-1 p-6 overflow-y-auto">
-            <p className="text-xs text-zinc-500 font-mono mb-5 truncate">{selected.relPath}</p>
+            <p className="text-xs text-zinc-500 font-mono mb-4 truncate">{selected.relPath}</p>
+            <div className="mb-5">
+              <label className="block text-xs text-zinc-400 mb-1">ファイル名</label>
+              <input
+                type="text"
+                value={selected.newFileName}
+                onChange={(e) => onUpdateFileName(selectedIndex, e.target.value)}
+                className="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-1.5 text-sm text-zinc-100 font-mono focus:outline-none focus:border-violet-500 transition-colors"
+              />
+            </div>
             <div className="grid grid-cols-2 gap-x-6 gap-y-4 mb-6">
               {FIELDS.map(({ key, label }) => (
                 <div key={key}>
