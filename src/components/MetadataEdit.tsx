@@ -32,8 +32,12 @@ async function collectAllAudio(
   dir: FileSystemDirectoryHandle,
   relPath = ""
 ): Promise<{ relPath: string; fileHandle: FileSystemFileHandle }[]> {
+  const entries: [string, FileSystemHandle][] = [];
+  for await (const entry of dir as any) entries.push(entry);
+  entries.sort(([a], [b]) => a.localeCompare(b));
+
   const results: { relPath: string; fileHandle: FileSystemFileHandle }[] = [];
-  for await (const [name, handle] of dir as any) {
+  for (const [name, handle] of entries) {
     const path = relPath ? `${relPath}/${name}` : name;
     if (handle.kind === "directory") {
       const sub = await collectAllAudio(handle as FileSystemDirectoryHandle, path);
