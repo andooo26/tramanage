@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 // ---- Types ----
 
@@ -80,9 +80,9 @@ export function useMetadataEditor() {
     (editorState?.status === "ready" &&
       editorState.tracks.some((t) => t.saveStatus === "saving"));
 
-  async function loadFfmpeg() {
+  async function loadFfmpeg(showLoadingState = true) {
     if (ffmpegRef.current) return ffmpegRef.current;
-    setEditorState({ status: "loading-ffmpeg" });
+    if (showLoadingState) setEditorState({ status: "loading-ffmpeg" });
     const { FFmpeg } = await import("@ffmpeg/ffmpeg");
     const { toBlobURL } = await import("@ffmpeg/util");
     const ffmpeg = new FFmpeg();
@@ -161,7 +161,10 @@ export function useMetadataEditor() {
     );
 
     try {
-      const ffmpeg = await loadFfmpeg();
+      // Reset FFmpeg instance before each save to get a fresh WASM heap,
+      // preventing "memory access out of bounds" from heap fragmentation.
+      ffmpegRef.current = null;
+      const ffmpeg = await loadFfmpeg(false);
       const file = await track.fileHandle.getFile();
       const inputData = new Uint8Array(await file.arrayBuffer());
       const ext = track.relPath.substring(track.relPath.lastIndexOf("."));
@@ -181,8 +184,10 @@ export function useMetadataEditor() {
 
       await ffmpeg.exec(["-i", inputName, "-map_metadata", "-1", ...metaArgs, "-c", "copy", outputName]);
       const outputData = (await ffmpeg.readFile(outputName)) as Uint8Array;
-      await ffmpeg.deleteFile(inputName);
-      await ffmpeg.deleteFile(outputName);
+      await ffmpeg.deleteFile(inputName).catch(() => {});
+      await ffmpeg.deleteFile(outputName).catch(() => {});
+      // Release WASM memory immediately after extracting output
+      ffmpegRef.current = null;
 
       const currentFileName = track.relPath.includes("/")
         ? track.relPath.substring(track.relPath.lastIndexOf("/") + 1)
@@ -226,6 +231,7 @@ export function useMetadataEditor() {
       }
     } catch (err) {
       console.error("Failed to save metadata:", err);
+      ffmpegRef.current = null;
       setEditorState((prev) =>
         prev?.status === "ready"
           ? { ...prev, tracks: prev.tracks.map((t, i) => i === index ? { ...t, saveStatus: "error" } : t) }
@@ -291,6 +297,13 @@ const FIELDS: { key: keyof TrackMetadata; label: string }[] = [
   { key: "genre", label: "ジャンル" },
 ];
 
+function formatTime(sec: number): string {
+  if (!isFinite(sec)) return "0:00";
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
 type Props = {
   editorState: EditorState;
   selectedIndex: number;
@@ -308,6 +321,73 @@ export default function MetadataEdit({
   onUpdateMetadata,
   onUpdateFileName,
 }: Props) {
+  const [playingIndex, setPlayingIndex] = useState<number | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [volume, setVolume] = useState(1);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const objectUrlRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const audio = new Audio();
+    audioRef.current = audio;
+
+    audio.addEventListener("timeupdate", () => setCurrentTime(audio.currentTime));
+    audio.addEventListener("loadedmetadata", () => setDuration(audio.duration));
+    audio.addEventListener("ended", () => setIsPlaying(false));
+
+    return () => {
+      audio.pause();
+      if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
+      audioRef.current = null;
+    };
+  }, []);
+
+  async function handlePlay(index: number) {
+    if (editorState.status !== "ready") return;
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    if (playingIndex === index) {
+      if (isPlaying) {
+        audio.pause();
+        setIsPlaying(false);
+      } else {
+        await audio.play();
+        setIsPlaying(true);
+      }
+      return;
+    }
+
+    if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
+    const track = editorState.tracks[index];
+    const file = await track.fileHandle.getFile();
+    const url = URL.createObjectURL(file);
+    objectUrlRef.current = url;
+    audio.src = url;
+    audio.currentTime = 0;
+    setPlayingIndex(index);
+    setCurrentTime(0);
+    setDuration(0);
+    await audio.play();
+    setIsPlaying(true);
+  }
+
+  function handleSeek(e: React.ChangeEvent<HTMLInputElement>) {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const t = parseFloat(e.target.value);
+    audio.currentTime = t;
+    setCurrentTime(t);
+  }
+
+  function handleVolume(e: React.ChangeEvent<HTMLInputElement>) {
+    const v = parseFloat(e.target.value);
+    setVolume(v);
+    if (audioRef.current) audioRef.current.volume = v;
+  }
+
   if (editorState.status === "loading-ffmpeg") {
     return (
       <div className="w-full max-w-5xl mb-8">
@@ -350,93 +430,182 @@ export default function MetadataEdit({
   }
 
   const selected = tracks[selectedIndex] ?? null;
+  const playingTrack = playingIndex !== null ? tracks[playingIndex] : null;
 
   return (
     <div className="w-full max-w-5xl mb-8">
-      <div className="bg-zinc-900 rounded-xl border border-violet-700 overflow-hidden flex h-[540px]">
-        {/* File list */}
-        <div className="w-64 border-r border-zinc-800 overflow-y-auto flex-shrink-0">
-          {tracks.map((track, i) => {
-            const fileName = track.relPath.includes("/")
-              ? track.relPath.substring(track.relPath.lastIndexOf("/") + 1)
-              : track.relPath;
-            const isSelected = i === selectedIndex;
-            return (
-              <button
-                key={i}
-                onClick={() => onSelect(i)}
-                className={`w-full text-left px-3 py-2.5 border-b border-zinc-800 transition-colors ${
-                  isSelected
-                    ? "bg-violet-900/40 border-l-2 border-l-violet-500"
-                    : "hover:bg-zinc-800"
-                }`}
-              >
-                <div className="flex items-start gap-1.5">
-                  <span className="flex-1 min-w-0">
-                    <p className="text-xs text-zinc-100 truncate font-mono">{fileName}</p>
-                    <p className="text-xs text-zinc-500 truncate mt-0.5">
-                      {track.metadata.artist || "—"}
-                    </p>
-                  </span>
-                  {track.saveStatus === "saved" && (
-                    <span className="text-green-400 text-xs mt-0.5">✓</span>
-                  )}
-                  {track.saveStatus === "saving" && (
-                    <span className="text-violet-400 text-xs mt-0.5 animate-pulse">…</span>
-                  )}
-                  {track.saveStatus === "error" && (
-                    <span className="text-red-400 text-xs mt-0.5">✗</span>
-                  )}
+      <div className="bg-zinc-900 rounded-xl border border-violet-700 overflow-hidden flex flex-col">
+        <div className="flex h-[540px]">
+          {/* File list */}
+          <div className="w-64 border-r border-zinc-800 overflow-y-auto flex-shrink-0">
+            {tracks.map((track, i) => {
+              const fileName = track.relPath.includes("/")
+                ? track.relPath.substring(track.relPath.lastIndexOf("/") + 1)
+                : track.relPath;
+              const isSelected = i === selectedIndex;
+              const isThisPlaying = playingIndex === i && isPlaying;
+              return (
+                <div
+                  key={i}
+                  className={`flex items-stretch border-b border-zinc-800 transition-colors ${
+                    isSelected ? "bg-violet-900/40 border-l-2 border-l-violet-500" : "hover:bg-zinc-800"
+                  }`}
+                >
+                  <button
+                    onClick={() => onSelect(i)}
+                    className="flex-1 min-w-0 text-left px-3 py-2.5"
+                  >
+                    <div className="flex items-start gap-1.5">
+                      <span className="flex-1 min-w-0">
+                        <p className={`text-xs truncate font-mono ${playingIndex === i ? "text-violet-300" : "text-zinc-100"}`}>{fileName}</p>
+                        <p className="text-xs text-zinc-500 truncate mt-0.5">
+                          {track.metadata.artist || "—"}
+                        </p>
+                      </span>
+                      {track.saveStatus === "saved" && (
+                        <span className="text-green-400 text-xs mt-0.5">✓</span>
+                      )}
+                      {track.saveStatus === "saving" && (
+                        <span className="text-violet-400 text-xs mt-0.5 animate-pulse">…</span>
+                      )}
+                      {track.saveStatus === "error" && (
+                        <span className="text-red-400 text-xs mt-0.5">✗</span>
+                      )}
+                    </div>
+                  </button>
+                  <button
+                    onClick={() => handlePlay(i)}
+                    className="px-2 text-zinc-400 hover:text-violet-400 transition-colors flex-shrink-0"
+                    title={isThisPlaying ? "一時停止" : "再生"}
+                  >
+                    {isThisPlaying ? (
+                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5">
+                        <rect x="3" y="2" width="3.5" height="12" rx="1" />
+                        <rect x="9.5" y="2" width="3.5" height="12" rx="1" />
+                      </svg>
+                    ) : (
+                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5">
+                        <path d="M3 2.5l10 5.5-10 5.5V2.5z" />
+                      </svg>
+                    )}
+                  </button>
                 </div>
-              </button>
-            );
-          })}
+              );
+            })}
+          </div>
+
+          {/* Edit panel */}
+          {selected && (
+            <div className="flex-1 p-6 overflow-y-auto">
+              <p className="text-xs text-zinc-500 font-mono mb-4 truncate">{selected.relPath}</p>
+              <div className="mb-5">
+                <label className="block text-xs text-zinc-400 mb-1">ファイル名</label>
+                <input
+                  type="text"
+                  value={selected.newFileName}
+                  onChange={(e) => onUpdateFileName(selectedIndex, e.target.value)}
+                  className="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-1.5 text-sm text-zinc-100 font-mono focus:outline-none focus:border-violet-500 transition-colors"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-x-6 gap-y-4 mb-6">
+                {FIELDS.map(({ key, label }) => (
+                  <div key={key}>
+                    <label className="block text-xs text-zinc-400 mb-1">{label}</label>
+                    <input
+                      type="text"
+                      value={selected.metadata[key]}
+                      onChange={(e) => onUpdateMetadata(selectedIndex, key, e.target.value)}
+                      className="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-1.5 text-sm text-zinc-100 focus:outline-none focus:border-violet-500 transition-colors"
+                    />
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => onSave(selectedIndex)}
+                  disabled={selected.saveStatus === "saving"}
+                  className="px-5 py-2 rounded-lg bg-violet-700 hover:bg-violet-600 disabled:opacity-50 text-white text-sm font-medium transition-colors"
+                >
+                  {selected.saveStatus === "saving" ? "保存中..." : "保存"}
+                </button>
+                {selected.saveStatus === "saved" && (
+                  <span className="text-green-400 text-sm">保存しました</span>
+                )}
+                {selected.saveStatus === "error" && (
+                  <span className="text-red-400 text-sm">保存に失敗しました</span>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
-        {/* Edit panel */}
-        {selected && (
-          <div className="flex-1 p-6 overflow-y-auto">
-            <p className="text-xs text-zinc-500 font-mono mb-4 truncate">{selected.relPath}</p>
-            <div className="mb-5">
-              <label className="block text-xs text-zinc-400 mb-1">ファイル名</label>
-              <input
-                type="text"
-                value={selected.newFileName}
-                onChange={(e) => onUpdateFileName(selectedIndex, e.target.value)}
-                className="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-1.5 text-sm text-zinc-100 font-mono focus:outline-none focus:border-violet-500 transition-colors"
-              />
-            </div>
-            <div className="grid grid-cols-2 gap-x-6 gap-y-4 mb-6">
-              {FIELDS.map(({ key, label }) => (
-                <div key={key}>
-                  <label className="block text-xs text-zinc-400 mb-1">{label}</label>
-                  <input
-                    type="text"
-                    value={selected.metadata[key]}
-                    onChange={(e) => onUpdateMetadata(selectedIndex, key, e.target.value)}
-                    className="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-1.5 text-sm text-zinc-100 focus:outline-none focus:border-violet-500 transition-colors"
-                  />
-                </div>
-              ))}
-            </div>
+        {/* Player bar */}
+        <div className="border-t border-zinc-800 px-4 py-3 flex items-center gap-4 bg-zinc-950">
+          <button
+            onClick={() => playingIndex !== null && handlePlay(playingIndex)}
+            disabled={playingIndex === null}
+            className="w-8 h-8 flex items-center justify-center rounded-full bg-violet-700 hover:bg-violet-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors flex-shrink-0"
+          >
+            {isPlaying ? (
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="white" className="w-3.5 h-3.5">
+                <rect x="3" y="2" width="3.5" height="12" rx="1" />
+                <rect x="9.5" y="2" width="3.5" height="12" rx="1" />
+              </svg>
+            ) : (
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="white" className="w-3.5 h-3.5">
+                <path d="M3 2.5l10 5.5-10 5.5V2.5z" />
+              </svg>
+            )}
+          </button>
 
-            <div className="flex items-center gap-3">
-              <button
-                onClick={() => onSave(selectedIndex)}
-                disabled={selected.saveStatus === "saving"}
-                className="px-5 py-2 rounded-lg bg-violet-700 hover:bg-violet-600 disabled:opacity-50 text-white text-sm font-medium transition-colors"
-              >
-                {selected.saveStatus === "saving" ? "保存中..." : "保存"}
-              </button>
-              {selected.saveStatus === "saved" && (
-                <span className="text-green-400 text-sm">保存しました</span>
-              )}
-              {selected.saveStatus === "error" && (
-                <span className="text-red-400 text-sm">保存に失敗しました</span>
-              )}
-            </div>
+          <div className="flex-1 min-w-0">
+            {playingTrack ? (
+              <p className="text-xs text-zinc-300 truncate mb-1.5">
+                <span className="text-violet-400">{playingTrack.metadata.title || (playingTrack.relPath.includes("/") ? playingTrack.relPath.substring(playingTrack.relPath.lastIndexOf("/") + 1) : playingTrack.relPath)}</span>
+                {playingTrack.metadata.artist && <span className="text-zinc-500"> — {playingTrack.metadata.artist}</span>}
+              </p>
+            ) : (
+              <p className="text-xs text-zinc-600 mb-1.5">再生停止中</p>
+            )}
+            <input
+              type="range"
+              min={0}
+              max={duration || 0}
+              step={0.1}
+              value={currentTime}
+              onChange={handleSeek}
+              disabled={!playingTrack}
+              className="w-full h-1 accent-violet-500 disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed"
+            />
           </div>
-        )}
+
+          <span className="text-xs text-zinc-500 tabular-nums flex-shrink-0">
+            {formatTime(currentTime)}{duration > 0 ? ` / ${formatTime(duration)}` : ""}
+          </span>
+
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5 text-zinc-500 flex-shrink-0">
+              {volume === 0 ? (
+                <path d="M8 2.5L4.5 6H2a.5.5 0 00-.5.5v3A.5.5 0 002 10h2.5L8 13.5V2.5zM11.5 5.5l-1 1M13.5 3.5l-1 1M11.5 10.5l-1-1M13.5 12.5l-1-1" />
+              ) : volume < 0.5 ? (
+                <path d="M8 2.5L4.5 6H2a.5.5 0 00-.5.5v3A.5.5 0 002 10h2.5L8 13.5V2.5zM10.5 5.5a3 3 0 010 5" />
+              ) : (
+                <path d="M8 2.5L4.5 6H2a.5.5 0 00-.5.5v3A.5.5 0 002 10h2.5L8 13.5V2.5zM10.5 5.5a3 3 0 010 5M12.5 3.5a6 6 0 010 9" />
+              )}
+            </svg>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.01}
+              value={volume}
+              onChange={handleVolume}
+              className="w-20 h-1 accent-violet-500 cursor-pointer"
+              title={`音量: ${Math.round(volume * 100)}%`}
+            />
+          </div>
+        </div>
       </div>
     </div>
   );
