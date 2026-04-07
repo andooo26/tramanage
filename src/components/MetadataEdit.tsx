@@ -13,12 +13,16 @@ type TrackMetadata = {
   genre: string;
 };
 
+type CoverArtUpdate = { dataUrl: string; data: Uint8Array; mimeType: string };
+
 type AudioTrack = {
   relPath: string;
   fileHandle: FileSystemFileHandle;
   metadata: TrackMetadata;
   newFileName: string;
   saveStatus: "idle" | "saving" | "saved" | "error";
+  coverArt: string | null;
+  newCoverArt: CoverArtUpdate | "remove" | null;
 };
 
 type EditorState =
@@ -102,10 +106,12 @@ export function useMetadataEditor() {
     ffmpeg: import("@ffmpeg/ffmpeg").FFmpeg,
     fileHandle: FileSystemFileHandle,
     relPath: string
-  ): Promise<TrackMetadata> {
+  ): Promise<{ metadata: TrackMetadata; coverArt: string | null }> {
     const ext = relPath.substring(relPath.lastIndexOf("."));
     const inputName = `probe_in${ext}`;
     const metaName = "probe_meta.txt";
+    const coverName = "probe_cover.jpg";
+    const empty: TrackMetadata = { title: "", artist: "", album: "", trackNumber: "", year: "", genre: "" };
     try {
       const file = await fileHandle.getFile();
       const inputData = new Uint8Array(await file.arrayBuffer());
@@ -116,13 +122,31 @@ export function useMetadataEditor() {
       } catch {
         // ffmpeg may return non-zero even on success
       }
-      const raw = await ffmpeg.readFile(metaName) as Uint8Array;
-      await ffmpeg.deleteFile(metaName).catch(() => {});
+      let metadata = empty;
+      try {
+        const raw = await ffmpeg.readFile(metaName) as Uint8Array;
+        await ffmpeg.deleteFile(metaName).catch(() => {});
+        metadata = parseFFMetadata(new TextDecoder().decode(raw));
+      } catch {}
+
+      // Extract cover art (embedded as video stream in most formats)
+      let coverArt: string | null = null;
+      try {
+        await ffmpeg.exec(["-i", inputName, "-map", "0:v", "-c", "copy", "-y", coverName]);
+        const coverData = await ffmpeg.readFile(coverName) as Uint8Array;
+        await ffmpeg.deleteFile(coverName).catch(() => {});
+        if (coverData.length > 100) {
+          let binary = "";
+          for (let i = 0; i < coverData.length; i++) binary += String.fromCharCode(coverData[i]);
+          coverArt = `data:image/jpeg;base64,${btoa(binary)}`;
+        }
+      } catch {}
+
       await ffmpeg.deleteFile(inputName).catch(() => {});
-      return parseFFMetadata(new TextDecoder().decode(raw));
+      return { metadata, coverArt };
     } catch {
       await ffmpeg.deleteFile(inputName).catch(() => {});
-      return { title: "", artist: "", album: "", trackNumber: "", year: "", genre: "" };
+      return { metadata: empty, coverArt: null };
     }
   }
 
@@ -139,9 +163,9 @@ export function useMetadataEditor() {
       for (let i = 0; i < entries.length; i++) {
         const { relPath, fileHandle } = entries[i];
         setEditorState({ status: "reading", done: i, total: entries.length });
-        const metadata = await readMetadata(ffmpeg, fileHandle, relPath);
+        const { metadata, coverArt } = await readMetadata(ffmpeg, fileHandle, relPath);
         const fileName = relPath.includes("/") ? relPath.substring(relPath.lastIndexOf("/") + 1) : relPath;
-        tracks.push({ relPath, fileHandle, metadata, newFileName: fileName, saveStatus: "idle" });
+        tracks.push({ relPath, fileHandle, metadata, newFileName: fileName, saveStatus: "idle", coverArt, newCoverArt: null });
       }
 
       setEditorState({ status: "ready", tracks });
@@ -186,7 +210,32 @@ export function useMetadataEditor() {
       if (year) metaArgs.push("-metadata", `date=${year}`);
       if (genre) metaArgs.push("-metadata", `genre=${genre}`);
 
-      await ffmpeg.exec(["-i", inputName, "-map_metadata", "-1", ...metaArgs, "-c", "copy", outputName]);
+      const { newCoverArt } = track;
+      let coverInputName: string | null = null;
+      if (newCoverArt && newCoverArt !== "remove") {
+        const coverExt = newCoverArt.mimeType === "image/png" ? ".png" : ".jpg";
+        coverInputName = `cover_in${coverExt}`;
+        await ffmpeg.writeFile(coverInputName, newCoverArt.data);
+      }
+
+      const ffArgs: string[] = ["-i", inputName];
+      if (coverInputName) ffArgs.push("-i", coverInputName);
+
+      if (coverInputName) {
+        // New cover art: audio from input 0, cover art from input 1
+        ffArgs.push("-map", "0:a", "-map", "1");
+      } else if (newCoverArt === "remove") {
+        // Remove cover art: only map audio streams
+        ffArgs.push("-map", "0:a");
+      } else {
+        // No change: preserve all streams (audio + existing cover art)
+        ffArgs.push("-map", "0");
+      }
+
+      ffArgs.push("-map_metadata", "-1", ...metaArgs, "-c", "copy", outputName);
+
+      await ffmpeg.exec(ffArgs);
+      if (coverInputName) await ffmpeg.deleteFile(coverInputName).catch(() => {});
       const outputData = (await ffmpeg.readFile(outputName)) as Uint8Array;
       await ffmpeg.deleteFile(inputName).catch(() => {});
       await ffmpeg.deleteFile(outputName).catch(() => {});
@@ -218,18 +267,25 @@ export function useMetadataEditor() {
         const newRelPath = dirParts.length > 0
           ? `${dirParts.join("/")}/${track.newFileName.trim()}`
           : track.newFileName.trim();
+        // Determine saved cover art state
+        const savedCoverArt = track.newCoverArt === "remove" ? null
+          : track.newCoverArt ? track.newCoverArt.dataUrl
+          : track.coverArt;
         setEditorState((prev) =>
           prev?.status === "ready"
-            ? { ...prev, tracks: prev.tracks.map((t, i) => i === index ? { ...t, relPath: newRelPath, fileHandle: newHandle, saveStatus: "saved" } : t) }
+            ? { ...prev, tracks: prev.tracks.map((t, i) => i === index ? { ...t, relPath: newRelPath, fileHandle: newHandle, saveStatus: "saved", coverArt: savedCoverArt, newCoverArt: null } : t) }
             : prev
         );
       } else {
         const writable = await track.fileHandle.createWritable();
         await writable.write(outputData as unknown as ArrayBuffer);
         await writable.close();
+        const savedCoverArt = track.newCoverArt === "remove" ? null
+          : track.newCoverArt ? track.newCoverArt.dataUrl
+          : track.coverArt;
         setEditorState((prev) =>
           prev?.status === "ready"
-            ? { ...prev, tracks: prev.tracks.map((t, i) => i === index ? { ...t, saveStatus: "saved" } : t) }
+            ? { ...prev, tracks: prev.tracks.map((t, i) => i === index ? { ...t, saveStatus: "saved", coverArt: savedCoverArt, newCoverArt: null } : t) }
             : prev
         );
       }
@@ -251,6 +307,19 @@ export function useMetadataEditor() {
             ...prev,
             tracks: prev.tracks.map((t, i) =>
               i === index ? { ...t, newFileName: value, saveStatus: "idle" } : t
+            ),
+          }
+        : prev
+    );
+  }
+
+  function updateCoverArt(index: number, value: CoverArtUpdate | "remove" | null) {
+    setEditorState((prev) =>
+      prev?.status === "ready"
+        ? {
+            ...prev,
+            tracks: prev.tracks.map((t, i) =>
+              i === index ? { ...t, newCoverArt: value, saveStatus: "idle" } : t
             ),
           }
         : prev
@@ -286,6 +355,7 @@ export function useMetadataEditor() {
     saveTrack,
     updateMetadata,
     updateFileName,
+    updateCoverArt,
     clear,
   };
 }
@@ -315,6 +385,7 @@ type Props = {
   onSave: (i: number) => void;
   onUpdateMetadata: (i: number, field: keyof TrackMetadata, value: string) => void;
   onUpdateFileName: (i: number, value: string) => void;
+  onUpdateCoverArt: (i: number, value: CoverArtUpdate | "remove" | null) => void;
 };
 
 export default function MetadataEdit({
@@ -324,6 +395,7 @@ export default function MetadataEdit({
   onSave,
   onUpdateMetadata,
   onUpdateFileName,
+  onUpdateCoverArt,
 }: Props) {
   const [playingIndex, setPlayingIndex] = useState<number | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -534,6 +606,74 @@ export default function MetadataEdit({
           {selected && (
             <div className="flex-1 p-6 overflow-y-auto">
               <p className="text-xs text-zinc-500 font-mono mb-4 truncate">{selected.relPath}</p>
+
+              {/* Cover art */}
+              {(() => {
+                const coverUrl = selected.newCoverArt === "remove"
+                  ? null
+                  : selected.newCoverArt
+                  ? selected.newCoverArt.dataUrl
+                  : selected.coverArt;
+                const hasCover = coverUrl !== null;
+                return (
+                  <div className="mb-5">
+                    <label className="block text-xs text-zinc-400 mb-2">ジャケット画像</label>
+                    <div className="flex items-start gap-3">
+                      <div className="w-20 h-20 bg-zinc-800 border border-zinc-700 rounded flex items-center justify-center flex-shrink-0 overflow-hidden">
+                        {hasCover ? (
+                          <img src={coverUrl!} alt="カバーアート" className="w-full h-full object-cover" />
+                        ) : (
+                          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-8 h-8 text-zinc-600">
+                            <rect x="3" y="3" width="18" height="18" rx="2" />
+                            <circle cx="12" cy="12" r="4" />
+                            <circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none" />
+                          </svg>
+                        )}
+                      </div>
+                      <div className="flex flex-col gap-2 pt-0.5">
+                        <label className="px-3 py-1.5 rounded bg-zinc-700 hover:bg-zinc-600 text-xs text-zinc-100 cursor-pointer transition-colors">
+                          {hasCover ? "変更" : "画像を選択"}
+                          <input
+                            type="file"
+                            accept="image/*"
+                            className="hidden"
+                            onChange={async (e) => {
+                              const file = e.target.files?.[0];
+                              if (!file) return;
+                              const arrayBuffer = await file.arrayBuffer();
+                              const data = new Uint8Array(arrayBuffer);
+                              let binary = "";
+                              for (let i = 0; i < data.length; i++) binary += String.fromCharCode(data[i]);
+                              const dataUrl = `data:${file.type || "image/jpeg"};base64,${btoa(binary)}`;
+                              onUpdateCoverArt(selectedIndex, { dataUrl, data, mimeType: file.type || "image/jpeg" });
+                              e.target.value = "";
+                            }}
+                          />
+                        </label>
+                        {(hasCover || selected.newCoverArt === "remove") && (
+                          <button
+                            onClick={() => onUpdateCoverArt(selectedIndex, selected.newCoverArt === "remove" ? null : "remove")}
+                            className={`px-3 py-1.5 rounded text-xs transition-colors text-left ${
+                              selected.newCoverArt === "remove"
+                                ? "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
+                                : "bg-zinc-800 hover:bg-red-900/40 text-zinc-400 hover:text-red-400"
+                            }`}
+                          >
+                            {selected.newCoverArt === "remove" ? "元に戻す" : "削除"}
+                          </button>
+                        )}
+                        {selected.newCoverArt === "remove" && (
+                          <span className="text-xs text-red-400">削除予定</span>
+                        )}
+                        {selected.newCoverArt && selected.newCoverArt !== "remove" && (
+                          <span className="text-xs text-violet-400">変更予定</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
               <div className="mb-5">
                 <label className="block text-xs text-zinc-400 mb-1">ファイル名</label>
                 <input

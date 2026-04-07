@@ -5,7 +5,8 @@
       "Bash(npm install:*)",
       "Bash(npm run:*)",
       "Bash(grep -r package.json D:DocumentsProjectsWebtramanagenode_modulesmusic-metadatalib --include=*.js -l)",
-      "Bash(npm uninstall:*)"
+      "Bash(npm uninstall:*)",
+      "Bash(npx tsc:*)"
     ]
   }
 }

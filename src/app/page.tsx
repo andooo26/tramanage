@@ -112,6 +112,7 @@ export default function Home() {
           onSave={metadataEditor.saveTrack}
           onUpdateMetadata={metadataEditor.updateMetadata}
           onUpdateFileName={metadataEditor.updateFileName}
+          onUpdateCoverArt={metadataEditor.updateCoverArt}
         />
       )}
     </div>
