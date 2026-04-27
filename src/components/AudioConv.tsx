@@ -1,12 +1,13 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { collectAudioFiles, getOrCreateDir, ConvertState } from "@/lib/fsUtils";
 
 // ---- hook ----
 
 export function useAudioConverter() {
   const [convertState, setConvertState] = useState<ConvertState | null>(null);
+  const [ffmpegLog, setFfmpegLog] = useState<string[]>([]);
   const ffmpegRef = useRef<import("@ffmpeg/ffmpeg").FFmpeg | null>(null);
 
   const isConverting =
@@ -23,6 +24,9 @@ export function useAudioConverter() {
         const { FFmpeg } = await import("@ffmpeg/ffmpeg");
         const { toBlobURL } = await import("@ffmpeg/util");
         const ffmpeg = new FFmpeg();
+        ffmpeg.on("log", ({ message }) => {
+          setFfmpegLog((prev) => [...prev, message]);
+        });
         await ffmpeg.load({
           coreURL: await toBlobURL("/ffmpeg/ffmpeg-core.js", "text/javascript"),
           wasmURL: await toBlobURL("/ffmpeg/ffmpeg-core.wasm", "application/wasm"),
@@ -52,9 +56,11 @@ export function useAudioConverter() {
           const inputName = `input${ext}`;
           const outputName = relPath.substring(relPath.lastIndexOf("/") + 1).replace(/\.[^.]+$/, "") + ".mp3";
           const tmpOutputName = "output.mp3";
+          const execArgs = ["-i", inputName, "-b:a", "320k", "-map_metadata", "0", tmpOutputName];
 
+          setFfmpegLog([`$ ffmpeg ${execArgs.join(" ")}`]);
           await ffmpeg.writeFile(inputName, inputData);
-          await ffmpeg.exec(["-i", inputName, "-b:a", "320k", "-map_metadata", "0", tmpOutputName]);
+          await ffmpeg.exec(execArgs);
           const outputData = await ffmpeg.readFile(tmpOutputName) as Uint8Array;
           await ffmpeg.deleteFile(inputName);
           await ffmpeg.deleteFile(tmpOutputName);
@@ -86,18 +92,30 @@ export function useAudioConverter() {
 
   function clear() {
     setConvertState(null);
+    setFfmpegLog([]);
   }
 
-  return { isConverting, convertState, convertAudio, clear };
+  return { isConverting, convertState, ffmpegLog, convertAudio, clear };
 }
 
 // ---- component ----
 
 type Props = {
   state: ConvertState;
+  ffmpegLog: string[];
 };
 
-export default function AudioConv({ state }: Props) {
+export default function AudioConv({ state, ffmpegLog }: Props) {
+  const logRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (logRef.current) {
+      logRef.current.scrollTop = logRef.current.scrollHeight;
+    }
+  }, [ffmpegLog]);
+
+  const showTerminal = state.status === "converting" || state.status === "done" || state.status === "error";
+
   return (
     <div className="w-full max-w-3xl mb-8">
       <div className="bg-zinc-900 rounded-xl border border-indigo-700 p-6 space-y-3">
@@ -120,6 +138,31 @@ export default function AudioConv({ state }: Props) {
             </div>
             <p className="font-mono text-xs text-zinc-400 truncate">{state.currentFile}</p>
           </>
+        )}
+        {showTerminal && ffmpegLog.length > 0 && (
+          <div
+            ref={logRef}
+            className="bg-black rounded-lg border border-zinc-800 p-3 h-48 overflow-y-auto font-mono text-xs leading-relaxed"
+          >
+            {ffmpegLog.map((line, i) => (
+              <div
+                key={i}
+                className={
+                  i === 0
+                    ? "text-indigo-400 mb-1"
+                    : line.startsWith("frame=") || line.includes("time=")
+                    ? "text-green-400"
+                    : line.toLowerCase().includes("error") || line.toLowerCase().includes("invalid")
+                    ? "text-red-400"
+                    : line.toLowerCase().includes("warning")
+                    ? "text-yellow-400"
+                    : "text-zinc-400"
+                }
+              >
+                {line}
+              </div>
+            ))}
+          </div>
         )}
         {state.status === "done" && state.errors.length > 0 && (
           <div>

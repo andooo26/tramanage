@@ -82,7 +82,7 @@ export default function Home() {
       </div>
 
       {audioConverter.convertState && (
-        <AudioConv state={audioConverter.convertState} />
+        <AudioConv state={audioConverter.convertState} ffmpegLog={audioConverter.ffmpegLog} />
       )}
 
       {folderViewer.result && !folderViewer.loading && (

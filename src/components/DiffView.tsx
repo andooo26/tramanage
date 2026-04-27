@@ -57,8 +57,9 @@ async function runDiff(
 ): Promise<DiffResult> {
   const [resA, resB] = await Promise.all([buildTree(dirA), buildTree(dirB)]);
   const isImage = (p: string) => /\.(jpe?g|png)$/i.test(p);
-  const setB = new Set(resB.filePaths.filter((p) => !isImage(p)));
-  const setA = new Set(resA.filePaths.filter((p) => !isImage(p)));
+  const norm = (p: string) => p.normalize("NFC");
+  const setB = new Set(resB.filePaths.filter((p) => !isImage(p)).map(norm));
+  const setA = new Set(resA.filePaths.filter((p) => !isImage(p)).map(norm));
   const onlyA = [...setA].filter((p) => !setB.has(p));
   const onlyB = [...setB].filter((p) => !setA.has(p));
   const common = [...setA].filter((p) => setB.has(p)).length;
